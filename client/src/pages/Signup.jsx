@@ -9,6 +9,7 @@ const Signup = () => {
   const [formData, setFormData] = useState({
     full_name: '',
     username: '',
+    email: '',
     password: '',
     role: 'FARMER'
   });
@@ -34,7 +35,8 @@ const Signup = () => {
         username: formData.username,
         password: formData.password,
         role: formData.role,
-        full_name: formData.full_name
+        full_name: formData.full_name,
+        email: formData.email || null
       });
 
       if (response.data.success) {
@@ -107,6 +109,26 @@ const Signup = () => {
             />
           </div>
 
+          {/* Email Field */}
+          <div>
+            <label 
+              htmlFor="email" 
+              className="block text-sm font-medium text-gray-700 mb-2"
+            >
+              Email (Optional)
+            </label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              value={formData.email}
+              onChange={handleChange}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none transition-all"
+              placeholder="your.email@example.com"
+              disabled={loading}
+            />
+          </div>
+
           {/* Password Field */}
           <div>
             <label 
@@ -149,13 +171,11 @@ const Signup = () => {
               <option value="FARMER">Farmer</option>
               <option value="DISTRIBUTOR">Distributor</option>
               <option value="TRANSPORTER">Transporter</option>
-              <option value="SHOPKEEPER">Shopkeeper</option>
+              <option value="RETAILER">Retailer</option>
               <option value="CONSUMER">Consumer</option>
             </select>
             <p className="mt-1 text-xs text-gray-500">
-              {formData.role === 'DISTRIBUTOR' && 'Initial wallet: $50,000'}
-              {formData.role === 'SHOPKEEPER' && 'Initial wallet: $20,000'}
-              {formData.role !== 'DISTRIBUTOR' && formData.role !== 'SHOPKEEPER' && 'Initial wallet: $0'}
+              Select your role in the supply chain
             </p>
           </div>
 

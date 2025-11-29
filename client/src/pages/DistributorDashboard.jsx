@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, User, Package, ShoppingCart, Loader2, Calendar, Sprout, DollarSign, X, Truck } from 'lucide-react';
+import { LogOut, User, Package, ShoppingCart, Loader2, Calendar, Sprout, DollarSign, X, Scissors, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:5000/api';
-const PRICE_PER_KG = 10;
 
 const DistributorDashboard = () => {
   const { user, logout, token } = useAuth();
@@ -16,10 +15,10 @@ const DistributorDashboard = () => {
   const [inventoryItems, setInventoryItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [buying, setBuying] = useState(false);
+  const [splitting, setSplitting] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState(null);
-  const [quantityToBuy, setQuantityToBuy] = useState('');
-  const [walletBalance, setWalletBalance] = useState(user?.wallet_balance || 0);
-  const [shippingBatchId, setShippingBatchId] = useState(null);
+  const [splitBatch, setSplitBatch] = useState(null);
+  const [splits, setSplits] = useState([{ quantity: '', quantity_unit: 'kg' }]);
 
   useEffect(() => {
     if (activeTab === 'marketplace') {
@@ -29,12 +28,6 @@ const DistributorDashboard = () => {
     }
   }, [activeTab, token]);
 
-  useEffect(() => {
-    if (user?.wallet_balance !== undefined) {
-      setWalletBalance(user.wallet_balance);
-    }
-  }, [user]);
-
   const fetchMarketplace = async () => {
     setLoading(true);
     try {
@@ -43,7 +36,6 @@ const DistributorDashboard = () => {
       });
 
       if (response.data.success) {
-        console.log('Marketplace items:', response.data.data);
         setMarketplaceItems(response.data.data);
       }
     } catch (error) {
@@ -73,51 +65,26 @@ const DistributorDashboard = () => {
   };
 
   const openBuyModal = (batch) => {
-    const availableQuantity = Number(batch.quantity) || 0;
     setSelectedBatch(batch);
-    setQuantityToBuy(availableQuantity ? String(availableQuantity) : '');
   };
 
   const closeBuyModal = () => {
     setSelectedBatch(null);
-    setQuantityToBuy('');
   };
 
   const handleBuy = async () => {
     if (!selectedBatch) return;
 
-    const qty = parseFloat(quantityToBuy);
-    if (Number.isNaN(qty) || qty <= 0) {
-      alert('Please enter a valid quantity greater than zero.');
-      return;
-    }
-
-    const availableQuantity = Number(selectedBatch.quantity) || 0;
-
-    if (qty > availableQuantity) {
-      alert(`Requested quantity exceeds available supply (${availableQuantity} kg).`);
-      return;
-    }
-
     setBuying(true);
-
     try {
       const response = await axios.post(
         `${API_BASE_URL}/distributor/buy`,
-        {
-          batch_id: selectedBatch.batch_id,
-          price_per_kg: Number(selectedBatch.price_per_kg) || PRICE_PER_KG,
-          quantity_to_buy: qty,
-        },
+        { batch_id: selectedBatch.id },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
       if (response.data.success) {
         alert('Purchase successful!');
-        setWalletBalance(response.data.data.new_wallet_balance);
-        if (user) {
-          user.wallet_balance = response.data.data.new_wallet_balance;
-        }
         closeBuyModal();
         fetchMarketplace();
         setActiveTab('inventory');
@@ -131,24 +98,75 @@ const DistributorDashboard = () => {
     }
   };
 
-  const handleShip = async (batchId) => {
-    setShippingBatchId(batchId);
+  const openSplitModal = (batch) => {
+    setSplitBatch(batch);
+    setSplits([{ quantity: '', quantity_unit: batch.quantity_unit || 'kg' }]);
+  };
+
+  const closeSplitModal = () => {
+    setSplitBatch(null);
+    setSplits([{ quantity: '', quantity_unit: 'kg' }]);
+  };
+
+  const addSplitRow = () => {
+    setSplits([...splits, { quantity: '', quantity_unit: splitBatch?.quantity_unit || 'kg' }]);
+  };
+
+  const removeSplitRow = (index) => {
+    if (splits.length > 1) {
+      setSplits(splits.filter((_, i) => i !== index));
+    }
+  };
+
+  const updateSplit = (index, field, value) => {
+    const newSplits = [...splits];
+    newSplits[index][field] = value;
+    setSplits(newSplits);
+  };
+
+  const handleSplit = async () => {
+    if (!splitBatch) return;
+
+    // Validate splits
+    const totalQuantity = splits.reduce((sum, split) => {
+      return sum + (parseFloat(split.quantity) || 0);
+    }, 0);
+
+    if (totalQuantity <= 0) {
+      alert('Please enter at least one valid split quantity.');
+      return;
+    }
+
+    const availableQty = parseFloat(splitBatch.remaining_quantity) || 0;
+    if (totalQuantity > availableQty) {
+      alert(`Total split quantity (${totalQuantity}) exceeds available quantity (${availableQty}).`);
+      return;
+    }
+
+    setSplitting(true);
     try {
       const response = await axios.post(
-        `${API_BASE_URL}/distributor/ship`,
-        { batch_id: batchId },
+        `${API_BASE_URL}/distributor/split-batch`,
+        {
+          parent_batch_id: splitBatch.id,
+          splits: splits.map(s => ({
+            quantity: parseFloat(s.quantity),
+            quantity_unit: s.quantity_unit
+          }))
+        },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
       if (response.data.success) {
-        alert('Shipment initiated! Batch is now in transit.');
+        alert(`Batch split successfully! Created ${response.data.data.child_batches.length} child batches.`);
+        closeSplitModal();
         fetchInventory();
       }
     } catch (error) {
-      console.error('Error shipping batch:', error);
-      alert(error.response?.data?.message || 'Failed to ship batch. Please try again.');
+      console.error('Error splitting batch:', error);
+      alert(error.response?.data?.message || 'Failed to split batch. Please try again.');
     } finally {
-      setShippingBatchId(null);
+      setSplitting(false);
     }
   };
 
@@ -167,12 +185,21 @@ const DistributorDashboard = () => {
     });
   };
 
-  const calculateEstimatedCost = (qty, price = PRICE_PER_KG) => {
-    const parsedQty = parseFloat(qty);
-    const parsedPrice = parseFloat(price);
-    const safeQty = Number.isNaN(parsedQty) ? 0 : parsedQty;
-    const safePrice = Number.isNaN(parsedPrice) ? 0 : parsedPrice;
-    return (safeQty * safePrice).toFixed(2);
+  const getStatusBadge = (status) => {
+    const statusColors = {
+      'Harvested': 'bg-yellow-100 text-yellow-800',
+      'In Transit': 'bg-purple-100 text-purple-800',
+      'In Warehouse': 'bg-blue-100 text-blue-800',
+      'In Shop': 'bg-indigo-100 text-indigo-800',
+      'Sold': 'bg-gray-100 text-gray-800',
+      'Processing': 'bg-orange-100 text-orange-800'
+    };
+
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${statusColors[status] || 'bg-gray-100 text-gray-800'}`}>
+        {status}
+      </span>
+    );
   };
 
   return (
@@ -185,12 +212,7 @@ const DistributorDashboard = () => {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-gray-800">Distributor Dashboard</h1>
-              <p className="text-sm text-gray-500">
-                Welcome, {user?.username}{' '}
-                <span className="font-semibold text-blue-600 ml-1">
-                  Wallet Balance: ${walletBalance.toFixed(2)}
-                </span>
-              </p>
+              <p className="text-sm text-gray-500">Welcome, {user?.username}</p>
             </div>
           </div>
           <button
@@ -258,69 +280,46 @@ const DistributorDashboard = () => {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {marketplaceItems.map((item) => {
-                  const quantity = Number(item.quantity) || 0;
-                  const pricePerKg = Number(item.price_per_kg) || 0;
-                  const farmerName = item.farmer_name || 'Unknown';
-
-                  return (
-                    <div
-                      key={item.batch_id}
-                      className="border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow"
-                    >
-                      <div className="mb-4">
-                        <div className="flex items-start justify-between mb-2">
-                          <div>
-                            <h3 className="text-lg font-bold text-gray-800">{item.crop_name}</h3>
-                            <p className="text-sm text-gray-600">{item.variety}</p>
-                          </div>
-                          <Sprout className="w-6 h-6 text-green-600 flex-shrink-0" />
+                {marketplaceItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className="border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow"
+                  >
+                    <div className="mb-4">
+                      <div className="flex items-start justify-between mb-2">
+                        <div>
+                          <h3 className="text-lg font-bold text-gray-800">{item.product_title || 'Unknown Product'}</h3>
+                          <p className="text-sm text-gray-600 font-mono">{item.batch_code}</p>
                         </div>
-                        <div className="text-xs text-gray-500">
-                          Farmer:{' '}
-                          <span className="font-medium text-gray-700">{farmerName}</span>
-                        </div>
+                        <Sprout className="w-6 h-6 text-green-600 flex-shrink-0" />
                       </div>
-
-                      <div className="space-y-2 mb-4">
-                        <div className="flex items-center gap-2 text-sm text-gray-600">
-                          <Calendar className="w-4 h-4" />
-                          <span>Harvested: {formatDate(item.harvest_date)}</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-gray-600">
-                          <span className="font-medium">Available:</span>
-                          <span>{quantity || 0} kg</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-sm text-gray-600">
-                          <span className="font-medium">Price/kg:</span>
-                          <span>${pricePerKg.toFixed(2)}</span>
-                        </div>
-                      </div>
-
-                      <div className="mb-4 p-3 bg-blue-50 rounded-lg">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-gray-600">Estimated Cost:</span>
-                          <span className="text-lg font-bold text-blue-600">
-                            ${calculateEstimatedCost(quantity, pricePerKg)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-gray-500 mt-1">
-                          ({quantity} kg @ ${pricePerKg.toFixed(2)}/kg)
-                        </p>
-                      </div>
-
-                      <div className="pt-4 border-t border-gray-200">
-                        <button
-                          onClick={() => openBuyModal(item)}
-                          className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium flex items-center justify-center gap-2"
-                        >
-                          <DollarSign className="w-4 h-4" />
-                          Buy Now
-                        </button>
+                      <div className="text-xs text-gray-500">
+                        Farmer: <span className="font-medium text-gray-700">{item.owner_username || 'Unknown'}</span>
                       </div>
                     </div>
-                  );
-                })}
+
+                    <div className="space-y-2 mb-4">
+                      <div className="flex items-center gap-2 text-sm text-gray-600">
+                        <Calendar className="w-4 h-4" />
+                        <span>Harvested: {formatDate(item.harvest_date)}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-gray-600">
+                        <span className="font-medium">Available:</span>
+                        <span>{item.remaining_quantity || 0} {item.quantity_unit || 'kg'}</span>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-gray-200">
+                      <button
+                        onClick={() => openBuyModal(item)}
+                        className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium flex items-center justify-center gap-2"
+                      >
+                        <DollarSign className="w-4 h-4" />
+                        Buy Batch
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -357,26 +356,24 @@ const DistributorDashboard = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {inventoryItems.map((item) => (
                   <div
-                    key={item.batch_id}
+                    key={item.id}
                     className="border border-gray-200 rounded-lg p-6 hover:shadow-md transition-shadow"
                   >
                     <div className="mb-4">
                       <div className="flex items-start justify-between mb-2">
                         <div>
-                          <h3 className="text-lg font-bold text-gray-800">{item.crop_name}</h3>
-                          <p className="text-sm text-gray-600">{item.variety}</p>
+                          <h3 className="text-lg font-bold text-gray-800">{item.product_title || 'Unknown Product'}</h3>
+                          <p className="text-sm text-gray-600 font-mono">{item.batch_code}</p>
                         </div>
                         <Sprout className="w-6 h-6 text-green-600 flex-shrink-0" />
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        From:{' '}
-                        <span className="font-medium text-gray-700">
-                          {item.farmer_name || 'Unknown'}
-                        </span>
                       </div>
                     </div>
 
                     <div className="space-y-2 mb-4">
+                      <div className="flex items-center gap-2 text-sm text-gray-600">
+                        <span className="font-medium">Quantity:</span>
+                        <span>{item.remaining_quantity} / {item.initial_quantity} {item.quantity_unit}</span>
+                      </div>
                       <div className="flex items-center gap-2 text-sm text-gray-600">
                         <Calendar className="w-4 h-4" />
                         <span>Harvested: {formatDate(item.harvest_date)}</span>
@@ -384,26 +381,16 @@ const DistributorDashboard = () => {
                     </div>
 
                     <div className="pt-4 border-t border-gray-200 space-y-3">
-                      <span className="px-3 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 block w-fit">
-                        {item.status.replace(/_/g, ' ')}
-                      </span>
-                      <button
-                        onClick={() => handleShip(item.batch_id)}
-                        disabled={shippingBatchId === item.batch_id}
-                        className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {shippingBatchId === item.batch_id ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Shipping...
-                          </>
-                        ) : (
-                          <>
-                            <Truck className="w-4 h-4" />
-                            Ship to Shop
-                          </>
-                        )}
-                      </button>
+                      <div>{getStatusBadge(item.status_name)}</div>
+                      {item.remaining_quantity > 0 && (
+                        <button
+                          onClick={() => openSplitModal(item)}
+                          className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium flex items-center justify-center gap-2"
+                        >
+                          <Scissors className="w-4 h-4" />
+                          Split Batch
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -413,110 +400,184 @@ const DistributorDashboard = () => {
         )}
       </main>
 
-      {selectedBatch &&
-        (() => {
-          const pricePerKg = Number(selectedBatch.price_per_kg) || PRICE_PER_KG;
-          const availableQuantity = Number(selectedBatch.quantity) || 0;
-          const totalCost = calculateEstimatedCost(quantityToBuy, pricePerKg);
-          const parsedTotalCost = parseFloat(totalCost) || 0;
-          const exceedsBalance = parseFloat(quantityToBuy) > 0 && parsedTotalCost > walletBalance;
+      {/* Buy Modal */}
+      {selectedBatch && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
+            <div className="border-b border-gray-200 px-6 py-4 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold text-gray-800">Purchase Batch</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  {selectedBatch.product_title} - {selectedBatch.batch_code}
+                </p>
+              </div>
+              <button onClick={closeBuyModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
 
-          return (
-            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-              <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
-                <div className="border-b border-gray-200 px-6 py-4 flex justify-between items-center">
-                  <div>
-                    <h3 className="text-xl font-bold text-gray-800">Purchase Crop</h3>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {selectedBatch.crop_name} - {selectedBatch.variety}
-                    </p>
-                  </div>
-                  <button onClick={closeBuyModal} className="text-gray-400 hover:text-gray-600 transition-colors">
-                    <X className="w-6 h-6" />
-                  </button>
+            <div className="p-6 space-y-4">
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Farmer:</span>
+                  <span className="font-medium text-gray-800">{selectedBatch.owner_username || 'Unknown'}</span>
                 </div>
-
-                <div className="p-6 space-y-4">
-                  <div className="bg-gray-50 rounded-lg p-4 space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Farmer:</span>
-                      <span className="font-medium text-gray-800">
-                        {selectedBatch.farmer_name || 'Unknown'}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Price per kg:</span>
-                      <span className="font-medium text-gray-800">${pricePerKg.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Available Quantity:</span>
-                      <span className="font-medium text-gray-800">{availableQuantity} kg</span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label htmlFor="quantityToBuy" className="block text-sm font-medium text-gray-700 mb-2">
-                      Quantity to Buy (kg) <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      id="quantityToBuy"
-                      value={quantityToBuy}
-                      onChange={(e) => setQuantityToBuy(e.target.value)}
-                      required
-                      min="0.01"
-                      step="0.01"
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                      placeholder="Enter quantity in kg"
-                    />
-                  </div>
-
-                  <div className="bg-blue-50 rounded-lg p-4">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-700">Total Cost:</span>
-                      <span className="text-2xl font-bold text-blue-600">${totalCost}</span>
-                    </div>
-                    {exceedsBalance && (
-                      <p className="text-xs text-red-600 mt-2">
-                        Insufficient funds. You need ${(parsedTotalCost - walletBalance).toFixed(2)} more.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="border-t border-gray-200 px-6 py-4 flex justify-end gap-4">
-                  <button
-                    onClick={closeBuyModal}
-                    className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
-                    disabled={buying}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleBuy}
-                    disabled={buying || exceedsBalance || !quantityToBuy}
-                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {buying ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <DollarSign className="w-5 h-5" />
-                        Confirm Purchase
-                      </>
-                    )}
-                  </button>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Available Quantity:</span>
+                  <span className="font-medium text-gray-800">
+                    {selectedBatch.remaining_quantity} {selectedBatch.quantity_unit}
+                  </span>
                 </div>
               </div>
+
+              <p className="text-sm text-gray-600">
+                This will purchase the entire batch and transfer ownership to you.
+              </p>
             </div>
-          );
-        })()}
+
+            <div className="border-t border-gray-200 px-6 py-4 flex justify-end gap-4">
+              <button
+                onClick={closeBuyModal}
+                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                disabled={buying}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBuy}
+                disabled={buying}
+                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {buying ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <DollarSign className="w-5 h-5" />
+                    Confirm Purchase
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Split Modal */}
+      {splitBatch && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-bold text-gray-800">Split Batch</h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  {splitBatch.product_title} - {splitBatch.batch_code}
+                  <br />
+                  Available: {splitBatch.remaining_quantity} {splitBatch.quantity_unit}
+                </p>
+              </div>
+              <button onClick={closeSplitModal} className="text-gray-400 hover:text-gray-600 transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="space-y-4">
+                {splits.map((split, index) => (
+                  <div key={index} className="flex gap-4 items-end">
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Quantity {index + 1}
+                      </label>
+                      <input
+                        type="number"
+                        value={split.quantity}
+                        onChange={(e) => updateSplit(index, 'quantity', e.target.value)}
+                        step="0.01"
+                        min="0.01"
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none"
+                        placeholder="Enter quantity"
+                      />
+                    </div>
+                    <div className="w-32">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Unit</label>
+                      <select
+                        value={split.quantity_unit}
+                        onChange={(e) => updateSplit(index, 'quantity_unit', e.target.value)}
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent outline-none bg-white"
+                      >
+                        <option value="kg">kg</option>
+                        <option value="tons">tons</option>
+                        <option value="bags">bags</option>
+                        <option value="liters">liters</option>
+                      </select>
+                    </div>
+                    {splits.length > 1 && (
+                      <button
+                        onClick={() => removeSplitRow(index)}
+                        className="px-4 py-3 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={addSplitRow}
+                className="w-full px-4 py-2 border-2 border-dashed border-gray-300 text-gray-600 rounded-lg hover:border-green-500 hover:text-green-600 transition-colors flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Add Another Split
+              </button>
+
+              <div className="bg-blue-50 rounded-lg p-4">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-gray-700">Total Split Quantity:</span>
+                  <span className="text-lg font-bold text-blue-600">
+                    {splits.reduce((sum, s) => sum + (parseFloat(s.quantity) || 0), 0).toFixed(2)} {splitBatch?.quantity_unit}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-600 mt-1">
+                  Available: {splitBatch?.remaining_quantity} {splitBatch?.quantity_unit}
+                </p>
+              </div>
+            </div>
+
+            <div className="border-t border-gray-200 px-6 py-4 flex justify-end gap-4">
+              <button
+                onClick={closeSplitModal}
+                className="px-6 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                disabled={splitting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSplit}
+                disabled={splitting}
+                className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {splitting ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Splitting...
+                  </>
+                ) : (
+                  <>
+                    <Scissors className="w-5 h-5" />
+                    Split Batch
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
 export default DistributorDashboard;
- 

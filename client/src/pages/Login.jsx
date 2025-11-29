@@ -30,7 +30,11 @@ const Login = () => {
         login(response.data.user, response.data.token);
 
         // Redirect based on role
-        const role = response.data.user.role.toLowerCase();
+        let role = response.data.user.role.toLowerCase();
+        // Map RETAILER to shopkeeper route for backward compatibility
+        if (role === 'retailer') {
+          role = 'shopkeeper';
+        }
         navigate(`/dashboard/${role}`);
       }
     } catch (err) {
@@ -140,7 +144,7 @@ const Login = () => {
         {/* Demo Credentials Hint */}
         <div className="mt-4 pt-4 border-t border-gray-200">
           <p className="text-xs text-gray-500 text-center">
-            Demo users: farmer_joe, distributor_dave, transporter_tom, shop_sarah, consumer_carl
+            Demo users: farmer_joe, distributor_dave, transporter_tom, retailer_sarah, consumer_carl
             <br />
             Password: password123
           </p>

@@ -1,7 +1,6 @@
-const db = require('../config/db');
+const { User, Role } = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'agrichain_secret_key_2024';
 
@@ -21,21 +20,22 @@ const login = async (req, res) => {
       });
     }
 
-    const [rows] = await db.execute(
-      `SELECT user_id, username, password_hash, role, wallet_balance
-         FROM users
-        WHERE username = ?`,
-      [username]
-    );
+    const user = await User.findByUsername(username);
 
-    if (!rows.length) {
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password',
       });
     }
 
-    const user = rows[0];
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account is inactive. Please contact administrator.',
+      });
+    }
+
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
     if (!isPasswordValid) {
@@ -46,7 +46,11 @@ const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { user_id: user.user_id, username: user.username, role: user.role },
+      { 
+        user_id: user.id, 
+        username: user.username, 
+        role: user.role_name || 'UNKNOWN' 
+      },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -56,10 +60,12 @@ const login = async (req, res) => {
       message: 'Login successful',
       token,
       user: {
-        user_id: user.user_id,
+        id: user.id,
         username: user.username,
-        role: user.role,
-        wallet_balance: parseFloat(user.wallet_balance),
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role_name,
+        role_id: user.role_id,
       },
     });
   } catch (error) {
@@ -79,7 +85,7 @@ const register = async (req, res) => {
   console.log('[Auth] Register attempt');
 
   try {
-    const { username, password, role } = req.body;
+    const { username, password, email, full_name, role } = req.body;
 
     if (!username || !password || !role) {
       return res.status(400).json({
@@ -89,45 +95,68 @@ const register = async (req, res) => {
     }
 
     const normalizedRole = role.toUpperCase();
-    const allowedRoles = ['FARMER', 'DISTRIBUTOR', 'TRANSPORTER', 'SHOPKEEPER', 'CONSUMER'];
+    const allowedRoles = ['FARMER', 'DISTRIBUTOR', 'TRANSPORTER', 'RETAILER', 'CONSUMER'];
 
     if (!allowedRoles.includes(normalizedRole)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid role supplied',
+        message: `Invalid role. Allowed: ${allowedRoles.join(', ')}`,
       });
     }
 
-    const [existing] = await db.execute(
-      'SELECT username FROM users WHERE username = ?',
-      [username]
-    );
+    // Check if username already exists
+    const existingUser = await User.findByUsername(username);
+    if (existingUser) {
+      return res.status(409).json({ 
+        success: false, 
+        message: 'Username already exists' 
+      });
+    }
 
-    if (existing.length) {
-      return res.status(409).json({ success: false, message: 'Username already exists' });
+    // Check if email already exists (if provided)
+    if (email) {
+      const existingEmail = await User.findByEmail(email);
+      if (existingEmail) {
+        return res.status(409).json({ 
+          success: false, 
+          message: 'Email already exists' 
+        });
+      }
+    }
+
+    // Find role by name
+    const roleRecord = await Role.findByName(normalizedRole);
+    if (!roleRecord) {
+      return res.status(400).json({
+        success: false,
+        message: 'Role not found in database. Please contact administrator.',
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    let walletBalance = 0;
-    if (normalizedRole === 'DISTRIBUTOR') walletBalance = 50000;
-    if (normalizedRole === 'SHOPKEEPER') walletBalance = 20000;
-
+    const { v4: uuidv4 } = require('uuid');
     const userId = uuidv4();
 
-    await db.execute(
-      `INSERT INTO users (user_id, username, password_hash, role, wallet_balance)
-       VALUES (?, ?, ?, ?, ?)`,
-      [userId, username, hashedPassword, normalizedRole, walletBalance]
-    );
+    const newUser = await User.create({
+      id: userId,
+      username,
+      email: email || null,
+      password_hash: hashedPassword,
+      full_name: full_name || null,
+      role_id: roleRecord.id,
+      is_active: 1, // Auto-activate on registration
+    });
 
     res.status(201).json({
       success: true,
       message: 'Account created successfully',
       user: {
-        user_id: userId,
-        username,
+        id: newUser.id,
+        username: newUser.username,
+        email: newUser.email,
+        full_name: newUser.full_name,
         role: normalizedRole,
-        wallet_balance: walletBalance,
+        role_id: newUser.role_id,
       },
     });
   } catch (error) {

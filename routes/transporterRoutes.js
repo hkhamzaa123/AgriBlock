@@ -1,20 +1,20 @@
 const express = require('express');
 const router = express.Router();
-const logisticsController = require('../controllers/logisticsController');
+const eventController = require('../controllers/eventController');
 const { verifyToken } = require('../middleware/authMiddleware');
+const { requireRole } = require('../middleware/rbacMiddleware');
 
 // All routes require authentication
 router.use(verifyToken);
+router.use(requireRole('TRANSPORTER'));
 
-// GET /api/transporter/jobs - List all in-transit shipments
-router.get('/jobs', logisticsController.getShipments);
+// Create transport events
+router.post('/events', eventController.createEvent);
 
-// POST /api/transporter/deliver - Mark shipment as delivered (IN_SHOP)
-router.post('/deliver', logisticsController.deliverToShop);
+// Add attachments (proof of condition)
+router.post('/events/:event_id/attachments', eventController.addAttachment);
+
+// Add IoT data
+router.post('/events/:event_id/iot-data', eventController.addIoTData);
 
 module.exports = router;
-
-
-
-
-

@@ -1,240 +1,347 @@
-const db = require('../config/db');
+const { Batch, Product, Status, EventType, Event, ProductChainLog } = require('../models');
+const { generateBatchCode } = require('../utils/batchCodeGenerator');
 const { v4: uuidv4 } = require('uuid');
+const db = require('../config/db');
 
 /**
  * GET /api/distributor/marketplace
+ * Get all available batches for purchase (status = "Harvested")
  */
 const getMarketplace = async (req, res) => {
   try {
-    const sql = `
-      SELECT cb.batch_id,
-             cb.crop_name,
-             cb.variety,
-             cb.quantity,
-             cb.price_per_kg,
-             cb.harvest_date,
-             u.username AS farmer_name
-      FROM crop_batches cb
-      LEFT JOIN users u ON cb.farmer_id = u.user_id
-      WHERE cb.status = 'HARVESTED'
-      ORDER BY cb.created_at DESC
-    `;
+    // Get all batches with status "Harvested" that have remaining_quantity > 0
+    const harvestedStatus = await Status.findByName('Harvested');
+    if (!harvestedStatus) {
+      return res.status(500).json({
+        success: false,
+        message: 'Harvested status not found in database',
+      });
+    }
 
-    const [rows] = await db.query(sql);
+    const [rows] = await db.execute(
+      `SELECT b.*, 
+              p.title as product_title, p.crop_details,
+              u.username as owner_username, u.full_name as owner_name,
+              s.name as status_name
+       FROM batches b
+       LEFT JOIN products p ON b.product_id = p.id
+       LEFT JOIN users u ON b.current_owner_id = u.id
+       LEFT JOIN statuses s ON b.current_status_id = s.id
+       WHERE b.current_status_id = ? 
+         AND b.remaining_quantity > 0
+         AND b.parent_batch_id IS NULL
+       ORDER BY b.created_at DESC`,
+      [harvestedStatus.id]
+    );
 
-    const sanitizedRows = rows.map((row) => ({
-      batch_id: row.batch_id || 'UNKNOWN_BATCH',
-      crop_name: row.crop_name || 'Unknown Crop',
-      variety: row.variety || 'Unknown Variety',
-      quantity: row.quantity == null ? 0 : Number(row.quantity),
-      price_per_kg: row.price_per_kg == null ? 0 : Number(row.price_per_kg),
-      harvest_date: row.harvest_date || null,
-      farmer_name: row.farmer_name || 'Unknown',
-    }));
-
-    return res.status(200).json({
+    res.status(200).json({
       success: true,
       message: 'Marketplace retrieved successfully',
-      data: sanitizedRows,
-      count: sanitizedRows.length,
+      data: rows,
+      count: rows.length,
     });
   } catch (error) {
-    console.error('MARKETPLACE ERROR:', error);
-    return res.status(500).json({
-      message: 'Server Error',
+    console.error('getMarketplace error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch marketplace',
       error: error.message,
-      stack: error.stack,
     });
   }
 };
 
 /**
  * POST /api/distributor/buy
- * Simple buy logic with partial splitting (defensive defaults)
+ * Purchase a batch (changes ownership)
  */
 const buyBatch = async (req, res) => {
-  const { batch_id, quantity_to_buy } = req.body;
-  const distributor_id = req.user.user_id;
-
-  if (!batch_id || !quantity_to_buy) {
-    return res.status(400).json({
-      success: false,
-      message: 'batch_id and quantity_to_buy are required',
-    });
-  }
-
-  const requestedQty = parseFloat(quantity_to_buy);
-  if (Number.isNaN(requestedQty) || requestedQty <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'quantity_to_buy must be a number greater than zero',
-    });
-  }
-
-  const PRICE_PER_KG = 10;
-  const totalCost = PRICE_PER_KG * requestedQty;
-
   const connection = await db.getConnection();
+  
   try {
     await connection.beginTransaction();
 
-    const [batchRows] = await connection.query(
-      `SELECT batch_id, farmer_id, quantity, status, current_holder_id,
-              crop_name, variety, planting_date, harvest_date, price_per_kg
-         FROM crop_batches
-        WHERE batch_id = ? FOR UPDATE`,
+    const { batch_id } = req.body;
+    const distributor_id = req.user.user_id;
+
+    if (!batch_id) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'batch_id is required',
+      });
+    }
+
+    // Get batch with lock
+    const [batchRows] = await connection.execute(
+      `SELECT * FROM batches WHERE id = ? FOR UPDATE`,
       [batch_id]
     );
 
     if (batchRows.length === 0) {
       await connection.rollback();
-      connection.release();
-      return res.status(404).json({ success: false, message: 'Batch not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Batch not found',
+      });
     }
 
     const batch = batchRows[0];
-    const availableQty = parseFloat(batch.quantity) || 0;
 
-    if (batch.status !== 'HARVESTED') {
+    // Verify batch is available for purchase
+    const harvestedStatus = await Status.findByName('Harvested');
+    if (batch.current_status_id !== harvestedStatus.id) {
       await connection.rollback();
-      connection.release();
-      return res.status(400).json({ success: false, message: 'Batch must be HARVESTED' });
-    }
-
-    if (requestedQty > availableQty) {
-      await connection.rollback();
-      connection.release();
       return res.status(400).json({
         success: false,
-        message: `Requested quantity exceeds available supply (${availableQty} kg)`,
+        message: 'Batch is not available for purchase (must be Harvested)',
       });
     }
 
-    const [walletRows] = await connection.query(
-      'SELECT wallet_balance FROM users WHERE user_id = ? FOR UPDATE',
-      [distributor_id]
-    );
-
-    if (walletRows.length === 0) {
+    if (batch.remaining_quantity <= 0) {
       await connection.rollback();
-      connection.release();
-      return res.status(404).json({ success: false, message: 'Distributor not found' });
-    }
-
-    const currentBalance = parseFloat(walletRows[0].wallet_balance) || 0;
-    if (currentBalance < totalCost) {
-      await connection.rollback();
-      connection.release();
       return res.status(400).json({
         success: false,
-        message: `Insufficient funds (need $${totalCost.toFixed(2)}, have $${currentBalance.toFixed(2)})`,
+        message: 'Batch has no remaining quantity',
       });
     }
 
-    const farmer_id = batch.farmer_id;
+    // Change ownership
+    await Batch.update(batch_id, { 
+      current_owner_id: distributor_id 
+    });
 
-    await connection.query(
-      'UPDATE users SET wallet_balance = wallet_balance - ? WHERE user_id = ?',
-      [totalCost, distributor_id]
-    );
-    await connection.query(
-      'UPDATE users SET wallet_balance = wallet_balance + ? WHERE user_id = ?',
-      [totalCost, farmer_id]
-    );
+    // Create "Sold" event
+    const soldEventType = await EventType.findByName('Sold');
+    if (soldEventType) {
+      const eventId = uuidv4();
+      await Event.create({
+        id: eventId,
+        event_type_id: soldEventType.id,
+        batch_id,
+        actor_user_id: distributor_id,
+        location_coords: null,
+        blockchain_tx_hash: null,
+      });
 
-    const tx_id = uuidv4();
-    await connection.query(
-      `INSERT INTO transactions (tx_id, batch_id, buyer_id, seller_id, amount, quantity)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [tx_id, batch_id, distributor_id, farmer_id, totalCost, requestedQty]
-    );
-
-    if (requestedQty >= availableQty) {
-      await connection.query(
-        `UPDATE crop_batches
-            SET current_holder_id = ?, status = 'SOLD_TO_DISTRIBUTOR'
-          WHERE batch_id = ?`,
-        [distributor_id, batch_id]
-      );
-    } else {
-      await connection.query(
-        `UPDATE crop_batches
-            SET quantity = ?
-          WHERE batch_id = ?`,
-        [availableQty - requestedQty, batch_id]
-      );
-
-      const newBatchId = uuidv4();
-      await connection.query(
-        `INSERT INTO crop_batches
-           (batch_id, farmer_id, crop_name, variety, quantity, status,
-            current_holder_id, planting_date, harvest_date, harvest_machine_type,
-            price_per_kg, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'SOLD_TO_DISTRIBUTOR', ?, ?, ?, ?, ?, NOW(), NOW())`,
-        [
-          newBatchId,
-          farmer_id,
-          batch.crop_name,
-          batch.variety,
-          requestedQty,
-          distributor_id,
-          batch.planting_date,
-          batch.harvest_date,
-          batch.harvest_machine_type || null,
-          batch.price_per_kg || PRICE_PER_KG,
-        ]
-      );
+      // Update product_chain_log
+      const logId = uuidv4();
+      await ProductChainLog.create({
+        log_id: logId,
+        product_id: batch.product_id,
+        batch_id,
+        event_id: eventId,
+        status_id: batch.current_status_id,
+      });
     }
 
     await connection.commit();
-    connection.release();
+
+    const updatedBatch = await Batch.findById(batch_id);
 
     res.status(200).json({
       success: true,
-      message: 'Purchase successful',
+      message: 'Batch purchased successfully',
+      data: updatedBatch,
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error('buyBatch error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to purchase batch',
+      error: error.message,
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+/**
+ * POST /api/distributor/split-batch
+ * PHASE 3: Split a batch into smaller batches (recursive genealogy)
+ * Creates new batch rows with parent_batch_id pointing to original
+ * Reduces parent batch remaining_quantity
+ */
+const splitBatch = async (req, res) => {
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    const { parent_batch_id, splits } = req.body; // splits = [{quantity, quantity_unit}, ...]
+    const distributor_id = req.user.user_id;
+
+    if (!parent_batch_id || !splits || !Array.isArray(splits) || splits.length === 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'parent_batch_id and splits array are required',
+      });
+    }
+
+    // Get parent batch with lock
+    const [parentRows] = await connection.execute(
+      `SELECT * FROM batches WHERE id = ? FOR UPDATE`,
+      [parent_batch_id]
+    );
+
+    if (parentRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Parent batch not found',
+      });
+    }
+
+    const parentBatch = parentRows[0];
+
+    // Verify ownership
+    if (parentBatch.current_owner_id !== distributor_id) {
+      await connection.rollback();
+      return res.status(403).json({
+        success: false,
+        message: 'You do not own this batch',
+      });
+    }
+
+    // Calculate total quantity to split
+    const totalSplitQuantity = splits.reduce((sum, split) => {
+      return sum + parseFloat(split.quantity || 0);
+    }, 0);
+
+    // Verify remaining_quantity is sufficient
+    const remainingQty = parseFloat(parentBatch.remaining_quantity);
+    if (totalSplitQuantity > remainingQty) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient quantity. Available: ${remainingQty}, Requested: ${totalSplitQuantity}`,
+      });
+    }
+
+    // Get status for new batches
+    const processingStatus = await Status.findByName('Processing');
+    const inWarehouseStatus = await Status.findByName('In Warehouse');
+    const statusId = processingStatus ? processingStatus.id : inWarehouseStatus.id;
+
+    // Create child batches
+    const childBatches = [];
+    for (const split of splits) {
+      const quantity = parseFloat(split.quantity);
+      const quantityUnit = split.quantity_unit || parentBatch.quantity_unit;
+
+      if (quantity <= 0) {
+        continue; // Skip invalid quantities
+      }
+
+      const childBatchId = uuidv4();
+      const childBatchCode = generateBatchCode();
+
+      await Batch.create({
+        id: childBatchId,
+        product_id: parentBatch.product_id,
+        parent_batch_id: parent_batch_id, // Link to parent
+        batch_code: childBatchCode,
+        current_owner_id: distributor_id,
+        current_status_id: statusId,
+        initial_quantity: quantity,
+        remaining_quantity: quantity,
+        quantity_unit: quantityUnit,
+        harvest_date: parentBatch.harvest_date,
+      });
+
+      childBatches.push({
+        id: childBatchId,
+        batch_code: childBatchCode,
+        quantity,
+        quantity_unit: quantityUnit,
+      });
+
+      // Create "Split" event for child batch
+      const splitEventType = await EventType.findByName('Split');
+      if (splitEventType) {
+        const eventId = uuidv4();
+        await Event.create({
+          id: eventId,
+          event_type_id: splitEventType.id,
+          batch_id: childBatchId,
+          actor_user_id: distributor_id,
+          location_coords: null,
+          blockchain_tx_hash: null,
+        });
+
+        // Update product_chain_log
+        const logId = uuidv4();
+        await ProductChainLog.create({
+          log_id: logId,
+          product_id: parentBatch.product_id,
+          batch_id: childBatchId,
+          event_id: eventId,
+          status_id: statusId,
+        });
+      }
+    }
+
+    // Reduce parent batch remaining_quantity
+    const newRemainingQty = remainingQty - totalSplitQuantity;
+    await Batch.update(parent_batch_id, {
+      remaining_quantity: newRemainingQty,
+    });
+
+    // If parent is fully split, update status
+    if (newRemainingQty <= 0) {
+      const inWarehouseStatus = await Status.findByName('In Warehouse');
+      if (inWarehouseStatus) {
+        await Batch.update(parent_batch_id, {
+          current_status_id: inWarehouseStatus.id,
+        });
+      }
+    }
+
+    await connection.commit();
+
+    const updatedParent = await Batch.findById(parent_batch_id);
+
+    res.status(201).json({
+      success: true,
+      message: 'Batch split successfully',
       data: {
-        transaction_id: tx_id,
-        batch_id,
-        quantity_purchased: requestedQty,
-        amount_spent: totalCost,
+        parent_batch: updatedParent,
+        child_batches: childBatches,
+        total_split: totalSplitQuantity,
+        remaining_in_parent: newRemainingQty,
       },
     });
   } catch (error) {
     await connection.rollback();
-    connection.release();
-    console.error('Buy batch error:', error);
+    console.error('splitBatch error:', error);
     res.status(500).json({
       success: false,
-      message: 'Purchase failed',
+      message: 'Failed to split batch',
       error: error.message,
     });
+  } finally {
+    connection.release();
   }
 };
 
 /**
  * GET /api/distributor/inventory
+ * Get all batches owned by distributor
  */
 const getMyInventory = async (req, res) => {
   try {
     const distributor_id = req.user.user_id;
-
-    const [rows] = await db.query(
-      `SELECT cb.*, u.username AS farmer_name
-         FROM crop_batches cb
-         JOIN users u ON cb.farmer_id = u.user_id
-        WHERE cb.current_holder_id = ?
-        ORDER BY cb.created_at DESC`,
-      [distributor_id]
-    );
+    const batches = await Batch.findByOwnerId(distributor_id);
 
     res.status(200).json({
       success: true,
       message: 'Inventory retrieved successfully',
-      data: rows,
-      count: rows.length,
+      data: batches,
+      count: batches.length,
     });
   } catch (error) {
-    console.error('Inventory error:', error);
+    console.error('getMyInventory error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch inventory',
@@ -243,64 +350,9 @@ const getMyInventory = async (req, res) => {
   }
 };
 
-/**
- * POST /api/distributor/ship
- */
-const shipToShop = async (req, res) => {
-  try {
-    const { batch_id } = req.body;
-    const distributor_id = req.user.user_id;
-
-    if (!batch_id) {
-      return res.status(400).json({ success: false, message: 'batch_id is required' });
-    }
-
-    const [rows] = await db.query(
-      `SELECT batch_id, current_holder_id, status
-         FROM crop_batches WHERE batch_id = ?`,
-      [batch_id]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Batch not found' });
-    }
-
-    const batch = rows[0];
-
-    if (batch.current_holder_id !== distributor_id) {
-      return res.status(403).json({ success: false, message: 'You do not own this batch' });
-    }
-
-    if (batch.status !== 'SOLD_TO_DISTRIBUTOR') {
-      return res.status(400).json({
-        success: false,
-        message: 'Batch must be SOLD_TO_DISTRIBUTOR before shipping',
-      });
-    }
-
-    await db.query(
-      `UPDATE crop_batches SET status = 'IN_TRANSIT' WHERE batch_id = ?`,
-      [batch_id]
-    );
-
-    res.status(200).json({
-      success: true,
-      message: 'Batch shipped successfully; status set to IN_TRANSIT',
-    });
-  } catch (error) {
-    console.error('Ship error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to ship batch',
-      error: error.message,
-    });
-  }
-};
-
 module.exports = {
   getMarketplace,
   buyBatch,
+  splitBatch,
   getMyInventory,
-  shipToShop,
 };
- 

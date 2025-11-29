@@ -8,6 +8,9 @@ const farmerRoutes = require('./routes/farmerRoutes');
 const distributorRoutes = require('./routes/distributorRoutes');
 const transporterRoutes = require('./routes/transporterRoutes');
 const shopRoutes = require('./routes/shopRoutes');
+const traceabilityRoutes = require('./routes/traceabilityRoutes');
+const eventRoutes = require('./routes/eventRoutes');
+const commerceRoutes = require('./routes/commerceRoutes');
 require('dotenv').config();
 
 const app = express();
@@ -111,37 +114,60 @@ app.use('/api/farmer', farmerRoutes);
 app.use('/api/distributor', distributorRoutes);
 app.use('/api/transporter', transporterRoutes);
 app.use('/api/shop', shopRoutes);
+app.use('/api/traceability', traceabilityRoutes); // Public - no auth required
+app.use('/api/events', eventRoutes);
+app.use('/api/commerce', commerceRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'AgriChain API Server',
-    version: '1.0.0',
-    module: 'Module 1: Website & Role-based Dashboards',
+    message: 'AgriChain API Server - Farm-to-Retail Supply Chain Blockchain Platform',
+    version: '2.0.0',
+    description: 'Digital Twin system for agriculture with provenance, genealogy, and ownership tracking',
     endpoints: {
       health: '/health',
       auth: {
-        login: '/api/auth/login',
-        register: '/api/auth/register'
+        login: 'POST /api/auth/login',
+        register: 'POST /api/auth/register'
       },
       farmer: {
-        addBatch: '/api/farmer/add-batch',
-        myBatches: '/api/farmer/my-batches',
-        logEvent: '/api/farmer/log-event'
+        createProduct: 'POST /api/farmer/products',
+        getProducts: 'GET /api/farmer/products',
+        createBatch: 'POST /api/farmer/batches',
+        getBatches: 'GET /api/farmer/batches',
+        logEvent: 'POST /api/farmer/events'
       },
       distributor: {
-        marketplace: '/api/distributor/marketplace',
-        buy: '/api/distributor/buy',
-        inventory: '/api/distributor/inventory',
-        ship: '/api/distributor/ship'
+        marketplace: 'GET /api/distributor/marketplace',
+        buy: 'POST /api/distributor/buy',
+        splitBatch: 'POST /api/distributor/split-batch',
+        inventory: 'GET /api/distributor/inventory'
       },
       transporter: {
-        jobs: '/api/transporter/jobs',
-        deliver: '/api/transporter/deliver'
+        createEvent: 'POST /api/transporter/events',
+        addAttachment: 'POST /api/transporter/events/:event_id/attachments',
+        addIoTData: 'POST /api/transporter/events/:event_id/iot-data'
       },
-      shop: {
-        inventory: '/api/shop/inventory',
-        sell: '/api/shop/sell'
+      retailer: {
+        createOrder: 'POST /api/shop/orders',
+        getOrders: 'GET /api/shop/orders',
+        getOrder: 'GET /api/shop/orders/:order_id'
+      },
+      traceability: {
+        getBatchStory: 'GET /api/traceability/batch/:batch_code',
+        getGenealogy: 'GET /api/traceability/batch/:batch_code/genealogy',
+        getEvents: 'GET /api/traceability/batch/:batch_code/events'
+      },
+      events: {
+        create: 'POST /api/events',
+        getBatchEvents: 'GET /api/events/batch/:batch_id',
+        addAttachment: 'POST /api/events/:event_id/attachments',
+        addIoTData: 'POST /api/events/:event_id/iot-data'
+      },
+      commerce: {
+        createOrder: 'POST /api/commerce/orders',
+        getOrders: 'GET /api/commerce/orders',
+        getOrder: 'GET /api/commerce/orders/:order_id'
       }
     }
   });
@@ -155,11 +181,14 @@ initializeDatabase().then(() => {
     console.log(`💾 Database: MySQL (localhost:3306)`);
     console.log(`📊 Database Name: agrichain`);
     console.log('\n📋 Available API Routes:');
-    console.log('   Auth: /api/auth/login, /api/auth/register');
-    console.log('   Farmer: /api/farmer/add-batch, /api/farmer/my-batches, /api/farmer/log-event');
-    console.log('   Distributor: /api/distributor/marketplace, /api/distributor/buy, /api/distributor/inventory, /api/distributor/ship');
-    console.log('   Transporter: /api/transporter/jobs, /api/transporter/deliver');
-    console.log('   Shop: /api/shop/inventory, /api/shop/sell');
+    console.log('   Auth: POST /api/auth/login, POST /api/auth/register');
+    console.log('   Farmer: POST /api/farmer/products, POST /api/farmer/batches, GET /api/farmer/batches');
+    console.log('   Distributor: GET /api/distributor/marketplace, POST /api/distributor/buy, POST /api/distributor/split-batch');
+    console.log('   Transporter: POST /api/transporter/events, POST /api/transporter/events/:id/attachments');
+    console.log('   Retailer: POST /api/shop/orders, GET /api/shop/orders');
+    console.log('   Traceability: GET /api/traceability/batch/:batch_code (Public)');
+    console.log('   Events: POST /api/events, GET /api/events/batch/:batch_id');
+    console.log('   Commerce: POST /api/commerce/orders, GET /api/commerce/orders');
     console.log('');
   });
 }).catch(error => {

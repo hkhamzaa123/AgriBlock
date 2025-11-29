@@ -1,23 +1,23 @@
 const express = require('express');
 const router = express.Router();
 const distributorController = require('../controllers/distributorController');
-const logisticsController = require('../controllers/logisticsController');
 const { verifyToken } = require('../middleware/authMiddleware');
+const { requireRole } = require('../middleware/rbacMiddleware');
 
 // All routes require authentication
 router.use(verifyToken);
+router.use(requireRole('DISTRIBUTOR'));
 
-// GET /api/distributor/marketplace - Get all available crops for purchase
+// Marketplace
 router.get('/marketplace', distributorController.getMarketplace);
 
-// POST /api/distributor/buy - Purchase a crop batch
+// Purchase
 router.post('/buy', distributorController.buyBatch);
 
-// POST /api/distributor/ship - Move a batch to IN_TRANSIT
-router.post('/ship', logisticsController.shipToShop);
+// Batch splitting
+router.post('/split-batch', distributorController.splitBatch);
 
-// GET /api/distributor/inventory - Get distributor's purchased inventory
+// Inventory
 router.get('/inventory', distributorController.getMyInventory);
 
 module.exports = router;
-

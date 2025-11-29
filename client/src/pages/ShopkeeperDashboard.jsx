@@ -89,7 +89,7 @@ const ShopkeeperDashboard = () => {
               <Store className="w-6 h-6 text-purple-600" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-gray-800">Shopkeeper Dashboard</h1>
+              <h1 className="text-2xl font-bold text-gray-800">Retailer Dashboard</h1>
               <p className="text-sm text-gray-500">
                 Welcome, {user?.username}{' '}
                 <span className="font-semibold text-purple-600">
