@@ -11,6 +11,8 @@ import DistributorDashboard from './pages/DistributorDashboard';
 import TransporterDashboard from './pages/TransporterDashboard';
 import ShopkeeperDashboard from './pages/ShopkeeperDashboard';
 import ConsumerDashboard from './pages/ConsumerDashboard';
+import ConsumerTrace from './pages/ConsumerTrace';
+import AdminDashboard from './pages/AdminDashboard';
 
 function App() {
   return (
@@ -20,6 +22,8 @@ function App() {
           {/* Public Routes */}
           <Route path="/" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/trace" element={<ConsumerTrace />} />
+          <Route path="/track" element={<ConsumerTrace />} />
 
           {/* Protected Routes - Role-based Dashboards */}
           <Route
@@ -71,6 +75,15 @@ function App() {
             element={
               <ProtectedRoute allowedRoles={['CONSUMER']}>
                 <ConsumerDashboard />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN']}>
+                <AdminDashboard />
               </ProtectedRoute>
             }
           />

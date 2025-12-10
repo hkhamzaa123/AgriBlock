@@ -20,4 +20,7 @@ router.post('/split-batch', distributorController.splitBatch);
 // Inventory
 router.get('/inventory', distributorController.getMyInventory);
 
+// Return batch
+router.post('/return', distributorController.returnBatch);
+
 module.exports = router;

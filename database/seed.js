@@ -47,7 +47,8 @@ async function seedDatabase() {
       { id: uuidv4(), name: 'DISTRIBUTOR', description: 'Buys bulk from farmers and splits into smaller batches' },
       { id: uuidv4(), name: 'TRANSPORTER', description: 'Transports goods between locations' },
       { id: uuidv4(), name: 'RETAILER', description: 'Shopkeeper who sells to consumers' },
-      { id: uuidv4(), name: 'CONSUMER', description: 'End consumer who purchases products' }
+      { id: uuidv4(), name: 'CONSUMER', description: 'End consumer who purchases products' },
+      { id: uuidv4(), name: 'ADMIN', description: 'System administrator with full access' }
     ];
 
     for (const role of roles) {
@@ -130,6 +131,7 @@ async function seedDatabase() {
     // ========== SEED USERS ==========
     // Hash password for all users
     const hashedPassword = await bcrypt.hash('password123', 10);
+    const adminPassword = await bcrypt.hash('admin123', 10);
 
     const users = [
       {
@@ -176,6 +178,15 @@ async function seedDatabase() {
         full_name: 'Consumer Carl',
         role_id: roleMap['CONSUMER'],
         is_active: 1
+      },
+      {
+        id: uuidv4(),
+        username: 'admin',
+        email: 'admin@agrichain.com',
+        password_hash: adminPassword,
+        full_name: 'System Administrator',
+        role_id: roleMap['ADMIN'],
+        is_active: 1  // Admin is pre-approved
       }
     ];
 

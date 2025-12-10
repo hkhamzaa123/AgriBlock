@@ -1,4 +1,5 @@
 const { Batch, Event, EventAttachment, DeviceRawData, Product, User, Status } = require('../models');
+const db = require('../config/db');
 
 /**
  * GET /api/traceability/batch/:batch_code
@@ -34,15 +35,36 @@ const getBatchTraceability = async (req, res) => {
     // Get full event history (recursive - traverses up parent_batch_id)
     const allEvents = await Event.getFullHistory(batch.id);
 
-    // Enrich events with attachments and IoT data
+    // Enrich events with attachments, IoT data, and owner role information
     const enrichedEvents = await Promise.all(
       allEvents.map(async (event) => {
         const attachments = await EventAttachment.findByEventId(event.id);
         const iotData = await DeviceRawData.findByEventId(event.id);
+        
+        // Get batch owner and role for this event
+        const eventBatch = await Batch.findById(event.batch_id);
+        let ownerRole = null;
+        let ownerName = null;
+        if (eventBatch && eventBatch.current_owner_id) {
+          const [userRows] = await db.execute(
+            `SELECT u.full_name, r.name as role_name
+             FROM users u
+             LEFT JOIN roles r ON u.role_id = r.id
+             WHERE u.id = ?`,
+            [eventBatch.current_owner_id]
+          );
+          if (userRows.length > 0) {
+            ownerName = userRows[0].full_name;
+            ownerRole = userRows[0].role_name;
+          }
+        }
+        
         return {
           ...event,
           attachments,
           iot_data: iotData,
+          owner_name: ownerName,
+          owner_role: ownerRole,
         };
       })
     );
@@ -77,11 +99,15 @@ const getBatchTraceability = async (req, res) => {
         event_type: event.event_type_name,
         recorded_at: event.recorded_at,
         actor: event.actor_username,
+        actor_name: event.actor_name,
+        owner_name: event.owner_name,
+        owner_role: event.owner_role,
         location: event.location_coords,
         blockchain_tx: event.blockchain_tx_hash,
         attachments: event.attachments,
         iot_data: event.iot_data,
       })),
+      lifecycle_stages: buildLifecycleStages(enrichedEvents),
       summary: {
         total_events: enrichedEvents.length,
         origin: genealogyTree?.parent ? 'Split from parent batch' : 'Harvested from farm',
@@ -137,6 +163,54 @@ function buildJourneySummary(events) {
   }
 
   return journey.length > 0 ? journey : ['📋 Product journey tracked'];
+}
+
+/**
+ * Group events by lifecycle stages (Farmer, Distributor, Transporter, Retailer)
+ */
+function buildLifecycleStages(events) {
+  const stages = {
+    farmer: [],
+    distributor: [],
+    transporter: [],
+    retailer: []
+  };
+
+  events.forEach(event => {
+    const role = event.owner_role?.toUpperCase();
+    const stage = {
+      id: event.id,
+      event_type: event.event_type_name,
+      recorded_at: event.recorded_at,
+      actor: event.actor_username || event.actor_name,
+      owner_name: event.owner_name,
+      owner_role: event.owner_role,
+      location: event.location_coords,
+      attachments: event.attachments || [],
+      iot_data: event.iot_data || [],
+    };
+
+    if (role === 'FARMER') {
+      stages.farmer.push(stage);
+    } else if (role === 'DISTRIBUTOR') {
+      stages.distributor.push(stage);
+    } else if (role === 'TRANSPORTER') {
+      stages.transporter.push(stage);
+    } else if (role === 'RETAILER') {
+      stages.retailer.push(stage);
+    } else if (event.event_type_name === 'Harvest' || event.event_type_name === 'Fertilizer Applied' || event.event_type_name === 'Pesticide Applied' || event.event_type_name === 'Irrigation') {
+      // Farm events without explicit role
+      stages.farmer.push(stage);
+    } else if (event.event_type_name === 'Shipment Assigned' || event.event_type_name === 'Picked Up' || event.event_type_name === 'In Transit' || event.event_type_name === 'Delivered') {
+      // Transport events
+      stages.transporter.push(stage);
+    } else if (event.event_type_name === 'Sold' || event.event_type_name === 'Split') {
+      // Distribution events
+      stages.distributor.push(stage);
+    }
+  });
+
+  return stages;
 }
 
 /**

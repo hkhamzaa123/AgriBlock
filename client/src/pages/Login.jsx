@@ -30,12 +30,24 @@ const Login = () => {
         login(response.data.user, response.data.token);
 
         // Redirect based on role
-        let role = response.data.user.role.toLowerCase();
-        // Map RETAILER to shopkeeper route for backward compatibility
-        if (role === 'retailer') {
-          role = 'shopkeeper';
+        const role = response.data.user.role?.toUpperCase();
+        
+        if (role === 'ADMIN') {
+          navigate('/admin');
+        } else if (role === 'FARMER') {
+          navigate('/dashboard/farmer');
+        } else if (role === 'DISTRIBUTOR') {
+          navigate('/dashboard/distributor');
+        } else if (role === 'TRANSPORTER') {
+          navigate('/dashboard/transporter');
+        } else if (role === 'RETAILER') {
+          navigate('/dashboard/shopkeeper'); // Map RETAILER to shopkeeper route for backward compatibility
+        } else if (role === 'CONSUMER') {
+          navigate('/dashboard/consumer');
+        } else {
+          // Fallback to generic dashboard
+          navigate('/dashboard/farmer');
         }
-        navigate(`/dashboard/${role}`);
       }
     } catch (err) {
       setError(

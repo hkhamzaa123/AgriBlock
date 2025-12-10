@@ -2,6 +2,7 @@ const { Product, Batch, Status, EventType, Event, ProductChainLog } = require('.
 const { generateBatchCode } = require('../utils/batchCodeGenerator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../config/db');
+const { submitTransaction } = require('../utils/blockchainClient');
 
 /**
  * POST /api/farmer/products
@@ -10,7 +11,7 @@ const db = require('../config/db');
 const createProduct = async (req, res) => {
   try {
     const { title, crop_details } = req.body;
-    const farmer_id = req.user.user_id;
+    const farmer_id = req.user.id || req.user.user_id;
 
     if (!title) {
       return res.status(400).json({
@@ -25,6 +26,20 @@ const createProduct = async (req, res) => {
       farmer_id,
       title,
       crop_details: crop_details || null,
+    });
+
+    // Submit to blockchain
+    await submitTransaction({
+      sender: farmer_id,
+      recipient: farmer_id, // Same user for product creation
+      batch_id: `PRODUCT-${productId}`,
+      event_type: 'PRODUCT_CREATED',
+      data: {
+        product_id: productId,
+        title,
+        crop_details: crop_details || null,
+        timestamp: new Date().toISOString(),
+      },
     });
 
     res.status(201).json({
@@ -48,7 +63,7 @@ const createProduct = async (req, res) => {
  */
 const getMyProducts = async (req, res) => {
   try {
-    const farmer_id = req.user.user_id;
+    const farmer_id = req.user.id || req.user.user_id;
     const products = await Product.findByFarmerId(farmer_id);
 
     res.status(200).json({
@@ -73,127 +88,107 @@ const getMyProducts = async (req, res) => {
  * Sets initial_quantity = remaining_quantity, parent_batch_id = NULL, status = "Harvested"
  */
 const createBatch = async (req, res) => {
-  const connection = await db.getConnection();
-  
+  let connection;
+
   try {
+    const { product_id, initial_quantity, quantity_unit, harvest_date } = req.body;
+    const farmer_id = req.user.id || req.user.user_id;
+
+    if (!product_id || !initial_quantity) {
+      return res.status(400).json({ message: 'Missing required fields' });
+    }
+
+    connection = await db.getConnection();
     await connection.beginTransaction();
 
-    const { product_id, initial_quantity, quantity_unit, harvest_date } = req.body;
-    const farmer_id = req.user.user_id;
+    console.log(`[Farmer] Creating Batch for Product ${product_id} by User ${farmer_id}`);
 
-    if (!product_id || !initial_quantity || !quantity_unit) {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        message: 'product_id, initial_quantity, and quantity_unit are required',
-      });
+    // 1. Get/Create 'Harvested' Status ID
+    let [s] = await connection.execute("SELECT id FROM statuses WHERE name = 'Harvested'");
+    if (s.length === 0) {
+      const newStatusId = uuidv4();
+      await connection.execute("INSERT INTO statuses (id, name) VALUES (?, 'Harvested')", [newStatusId]);
+      s = [{ id: newStatusId }];
     }
+    const statusId = s[0].id;
 
-    const parsedQuantity = parseFloat(initial_quantity);
-    if (Number.isNaN(parsedQuantity) || parsedQuantity <= 0) {
-      await connection.rollback();
-      return res.status(400).json({
-        success: false,
-        message: 'initial_quantity must be a positive number',
-      });
-    }
-
-    // Verify product belongs to farmer
-    const product = await Product.findById(product_id);
-    if (!product) {
-      await connection.rollback();
-      return res.status(404).json({
-        success: false,
-        message: 'Product not found',
-      });
-    }
-
-    if (product.farmer_id !== farmer_id) {
-      await connection.rollback();
-      return res.status(403).json({
-        success: false,
-        message: 'You do not own this product',
-      });
-    }
-
-    // Get "Harvested" status
-    const harvestedStatus = await Status.findByName('Harvested');
-    if (!harvestedStatus) {
-      await connection.rollback();
-      return res.status(500).json({
-        success: false,
-        message: 'Harvested status not found in database',
-      });
-    }
-
-    // Create batch
+    // 2. Generate Batch Details
     const batchId = uuidv4();
-    const batchCode = generateBatchCode();
-    const batch = await Batch.create({
-      id: batchId,
-      product_id,
-      parent_batch_id: null, // Source batch - no parent
-      batch_code: batchCode,
-      current_owner_id: farmer_id,
-      current_status_id: harvestedStatus.id,
-      initial_quantity: parsedQuantity,
-      remaining_quantity: parsedQuantity, // Initially equal
-      quantity_unit: quantity_unit,
-      harvest_date: harvest_date || new Date(),
-    });
+    // Generate Code: BATCH-YYYYMMDD-RANDOM
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const uniqueSuffix = Math.floor(1000 + Math.random() * 9000);
+    const batchCode = `BATCH-${dateStr}-${uniqueSuffix}-${uuidv4().slice(0, 4).toUpperCase()}`;
 
-    // Get "Harvest" event type
-    const harvestEventType = await EventType.findByName('Harvest');
-    if (!harvestEventType) {
-      await connection.rollback();
-      return res.status(500).json({
-        success: false,
-        message: 'Harvest event type not found in database',
-      });
+    // 3. Insert Batch
+    // Schema: id, product_id, parent_batch_id, batch_code, current_owner_id, current_status_id, initial_quantity, remaining_quantity, quantity_unit, harvest_date
+    await connection.execute(
+      `
+      INSERT INTO batches 
+      (id, product_id, parent_batch_id, batch_code, current_owner_id, current_status_id, initial_quantity, remaining_quantity, quantity_unit, harvest_date) 
+      VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        batchId,
+        product_id,
+        batchCode,
+        farmer_id,
+        statusId,
+        initial_quantity,
+        initial_quantity, // Remaining = Initial at start
+        quantity_unit || 'kg',
+        harvest_date || new Date(),
+      ]
+    );
+
+    // 4. Log Event
+    const eventId = uuidv4();
+    // Get 'Harvest' Event Type
+    let [et] = await connection.execute("SELECT id FROM event_types WHERE name = 'Harvest'");
+    let eventTypeId;
+    if (et.length === 0) {
+      // Fallback or create
+      const newEtId = uuidv4();
+      await connection.execute("INSERT INTO event_types (id, name) VALUES (?, 'Harvest')", [newEtId]);
+      eventTypeId = newEtId;
+    } else {
+      eventTypeId = et[0].id;
     }
 
-    // Create Harvest event
-    const eventId = uuidv4();
-    const event = await Event.create({
-      id: eventId,
-      event_type_id: harvestEventType.id,
-      batch_id: batchId,
-      actor_user_id: farmer_id,
-      location_coords: null,
-      blockchain_tx_hash: null,
-    });
-
-    // Update product_chain_log (performance cache)
-    const logId = uuidv4();
-    await ProductChainLog.create({
-      log_id: logId,
-      product_id,
-      batch_id: batchId,
-      event_id: eventId,
-      status_id: harvestedStatus.id,
-    });
+    await connection.execute(
+      `
+        INSERT INTO events (id, event_type_id, batch_id, actor_user_id, recorded_at)
+        VALUES (?, ?, ?, ?, NOW())
+    `,
+      [eventId, eventTypeId, batchId, farmer_id]
+    );
 
     await connection.commit();
+    console.log(`[Farmer] Batch Created Successfully: ${batchCode}`);
 
-    res.status(201).json({
-      success: true,
-      message: 'Batch created and harvested successfully',
+    // Submit to blockchain
+    await submitTransaction({
+      sender: farmer_id,
+      recipient: farmer_id,
+      batch_id: batchCode,
+      event_type: 'HARVEST',
       data: {
-        batch: batch,
-        event: event,
-        batch_code: batchCode, // For QR code generation
+        batch_id: batchId,
+        batch_code: batchCode,
+        product_id,
+        initial_quantity,
+        quantity_unit: quantity_unit || 'kg',
+        harvest_date: harvest_date || new Date().toISOString(),
+        timestamp: new Date().toISOString(),
       },
     });
+
+    res.status(201).json({ message: 'Batch created successfully', batch_code: batchCode });
   } catch (error) {
-    await connection.rollback();
-    console.error('createBatch error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create batch',
-      error: error.message,
-    });
+    if (connection) await connection.rollback();
+    console.error('[Farmer Error] Create Batch Failed:', error);
+    res.status(500).json({ message: 'Server Error', error: error.message });
   } finally {
-    connection.release();
+    if (connection) connection.release();
   }
 };
 
@@ -203,7 +198,7 @@ const createBatch = async (req, res) => {
  */
 const getMyBatches = async (req, res) => {
   try {
-    const farmer_id = req.user.user_id;
+    const farmer_id = req.user.id || req.user.user_id;
     const batches = await Batch.findByOwnerId(farmer_id);
 
     res.status(200).json({
@@ -234,7 +229,7 @@ const logEvent = async (req, res) => {
     await connection.beginTransaction();
 
     const { batch_id, event_type_name, location_coords, description } = req.body;
-    const farmer_id = req.user.user_id;
+    const farmer_id = req.user.id || req.user.user_id;
 
     if (!batch_id || !event_type_name) {
       await connection.rollback();
@@ -297,6 +292,23 @@ const logEvent = async (req, res) => {
     // For now, we keep the current status
 
     await connection.commit();
+
+    // Submit to blockchain
+    await submitTransaction({
+      sender: farmer_id,
+      recipient: farmer_id,
+      batch_id: batch.batch_code,
+      event_type: event_type_name.toUpperCase().replace(/\s+/g, '_'),
+      data: {
+        event_id: eventId,
+        event_type: event_type_name,
+        batch_id,
+        batch_code: batch.batch_code,
+        location_coords: location_coords || null,
+        description: description || null,
+        timestamp: new Date().toISOString(),
+      },
+    });
 
     res.status(201).json({
       success: true,

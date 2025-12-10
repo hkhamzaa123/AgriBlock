@@ -29,19 +29,20 @@ const login = async (req, res) => {
       });
     }
 
-    if (!user.is_active) {
-      return res.status(403).json({
-        success: false,
-        message: 'Account is inactive. Please contact administrator.',
-      });
-    }
-
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
         message: 'Invalid username or password',
+      });
+    }
+
+    // Check if account is active AFTER password verification
+    if (user.is_active === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'Account pending Admin approval.',
       });
     }
 
@@ -137,6 +138,10 @@ const register = async (req, res) => {
     const { v4: uuidv4 } = require('uuid');
     const userId = uuidv4();
 
+    // New users are pending approval by default (is_active = 0)
+    // Exception: If username is 'admin' (from seeder), it's already active
+    const isActive = username === 'admin' ? 1 : 0;
+
     const newUser = await User.create({
       id: userId,
       username,
@@ -144,12 +149,14 @@ const register = async (req, res) => {
       password_hash: hashedPassword,
       full_name: full_name || null,
       role_id: roleRecord.id,
-      is_active: 1, // Auto-activate on registration
+      is_active: isActive,
     });
 
     res.status(201).json({
       success: true,
-      message: 'Account created successfully',
+      message: isActive === 1 
+        ? 'Account created successfully' 
+        : 'Registration successful! Account pending approval.',
       user: {
         id: newUser.id,
         username: newUser.username,

@@ -20,3 +20,17 @@ router.post('/:event_id/iot-data', eventController.addIoTData);
 
 module.exports = router;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

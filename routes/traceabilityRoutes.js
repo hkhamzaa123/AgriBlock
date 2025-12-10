@@ -15,3 +15,17 @@ router.get('/batch/:batch_code/events', traceabilityController.getBatchEvents);
 
 module.exports = router;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

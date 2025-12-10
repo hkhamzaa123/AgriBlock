@@ -37,3 +37,17 @@ class DeviceRawData {
 
 module.exports = DeviceRawData;
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

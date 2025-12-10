@@ -11,6 +11,8 @@ const shopRoutes = require('./routes/shopRoutes');
 const traceabilityRoutes = require('./routes/traceabilityRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const commerceRoutes = require('./routes/commerceRoutes');
+const consumerRoutes = require('./routes/consumerRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 require('dotenv').config();
 
 const app = express();
@@ -117,6 +119,8 @@ app.use('/api/shop', shopRoutes);
 app.use('/api/traceability', traceabilityRoutes); // Public - no auth required
 app.use('/api/events', eventRoutes);
 app.use('/api/commerce', commerceRoutes);
+app.use('/api/consumer', consumerRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
