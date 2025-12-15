@@ -87,6 +87,21 @@ class Event {
     // Sort by recorded_at
     return events.sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
   }
+
+  // Get ALL events for ALL batches of a product (complete product traceability)
+  static async getFullProductHistory(product_id) {
+    const [rows] = await db.execute(
+      `SELECT e.*, et.name as event_type_name, u.username as actor_username, u.full_name as actor_name, b.batch_code
+       FROM events e
+       LEFT JOIN event_types et ON e.event_type_id = et.id
+       LEFT JOIN users u ON e.actor_user_id = u.id
+       LEFT JOIN batches b ON e.batch_id = b.id
+       WHERE b.product_id = ?
+       ORDER BY e.recorded_at ASC`,
+      [product_id]
+    );
+    return rows;
+  }
 }
 
 module.exports = Event;

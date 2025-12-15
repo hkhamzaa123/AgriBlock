@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, User, ShoppingCart, Package, Loader2, Calendar, MapPin, Sprout, Factory, Truck, Store, ChevronDown, ChevronUp, X, Database, Link } from 'lucide-react';
+import { LogOut, User, ShoppingCart, Package, Loader2, Calendar, MapPin, Sprout, Factory, Truck, Store, ChevronDown, ChevronUp, X, Database, Link, CheckCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 

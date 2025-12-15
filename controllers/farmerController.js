@@ -114,10 +114,11 @@ const createBatch = async (req, res) => {
 
     // 2. Generate Batch Details
     const batchId = uuidv4();
-    // Generate Code: BATCH-YYYYMMDD-RANDOM
+    // Generate Code: BATCH-PRODUCTID-YYYYMMDD-RANDOM (for product-based tracking)
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const uniqueSuffix = Math.floor(1000 + Math.random() * 9000);
-    const batchCode = `BATCH-${dateStr}-${uniqueSuffix}-${uuidv4().slice(0, 4).toUpperCase()}`;
+    const productRef = product_id.slice(0, 8).toUpperCase(); // First 8 chars of product ID
+    const batchCode = `BATCH-${productRef}-${dateStr}-${uniqueSuffix}`;
 
     // 3. Insert Batch
     // Schema: id, product_id, parent_batch_id, batch_code, current_owner_id, current_status_id, initial_quantity, remaining_quantity, quantity_unit, harvest_date
@@ -165,16 +166,17 @@ const createBatch = async (req, res) => {
     await connection.commit();
     console.log(`[Farmer] Batch Created Successfully: ${batchCode}`);
 
-    // Submit to blockchain
+    // Submit to blockchain with product_id for complete traceability
     await submitTransaction({
       sender: farmer_id,
       recipient: farmer_id,
-      batch_id: batchCode,
+      batch_id: `${batchCode}:${product_id}`, // Combined identifier for blockchain
       event_type: 'HARVEST',
       data: {
         batch_id: batchId,
         batch_code: batchCode,
         product_id,
+        root_product_id: product_id, // Root identifier for all splits
         initial_quantity,
         quantity_unit: quantity_unit || 'kg',
         harvest_date: harvest_date || new Date().toISOString(),
@@ -293,17 +295,19 @@ const logEvent = async (req, res) => {
 
     await connection.commit();
 
-    // Submit to blockchain
+    // Submit to blockchain with product tracking
     await submitTransaction({
       sender: farmer_id,
       recipient: farmer_id,
-      batch_id: batch.batch_code,
+      batch_id: `${batch.batch_code}:${batch.product_id}`,
       event_type: event_type_name.toUpperCase().replace(/\s+/g, '_'),
       data: {
         event_id: eventId,
         event_type: event_type_name,
         batch_id,
         batch_code: batch.batch_code,
+        product_id: batch.product_id,
+        root_product_id: batch.product_id,
         location_coords: location_coords || null,
         description: description || null,
         timestamp: new Date().toISOString(),

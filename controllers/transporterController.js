@@ -254,22 +254,24 @@ const acceptJob = async (req, res) => {
     await connection.commit();
     connection.release();
 
-    // Submit to blockchain for each batch
+    // Submit to blockchain for each batch with product tracking
     for (const item of orderItems) {
       const [batches] = await db.execute(
-        'SELECT batch_code FROM batches WHERE id = ?',
+        'SELECT batch_code, product_id FROM batches WHERE id = ?',
         [item.batch_id]
       );
       if (batches.length > 0) {
         await submitTransaction({
           sender: order.seller_id,
           recipient: transporter_id,
-          batch_id: batches[0].batch_code,
+          batch_id: `${batches[0].batch_code}:${batches[0].product_id}`,
           event_type: 'SHIPMENT_ASSIGNED',
           data: {
             shipment_id: shipmentId,
             order_id,
             order_number: order.order_number,
+            product_id: batches[0].product_id,
+            root_product_id: batches[0].product_id,
             transporter_id,
             estimated_delivery: estimatedDelivery.toISOString(),
             timestamp: new Date().toISOString(),
@@ -484,21 +486,23 @@ const updateShipmentStatus = async (req, res) => {
     await connection.commit();
     connection.release();
 
-    // Submit to blockchain for each batch
+    // Submit to blockchain for each batch with product tracking
     for (const item of orderItems) {
       const [batches] = await db.execute(
-        'SELECT batch_code FROM batches WHERE id = ?',
+        'SELECT batch_code, product_id FROM batches WHERE id = ?',
         [item.batch_id]
       );
       if (batches.length > 0) {
         await submitTransaction({
           sender: transporter_id,
           recipient: status === 'Delivered' ? order.buyer_id : transporter_id,
-          batch_id: batches[0].batch_code,
+          batch_id: `${batches[0].batch_code}:${batches[0].product_id}`,
           event_type: status.toUpperCase().replace(/\s+/g, '_'),
           data: {
             shipment_id,
             order_id: order.id,
+            product_id: batches[0].product_id,
+            root_product_id: batches[0].product_id,
             status,
             location_coords: location_coords || null,
             timestamp: new Date().toISOString(),

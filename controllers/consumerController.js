@@ -392,7 +392,7 @@ const getMyOrders = async (req, res) => {
 
 /**
  * GET /api/consumer/blockchain/:batch_code
- * Get blockchain transactions for a specific batch
+ * Get blockchain transactions for a specific batch (by product_id for complete traceability)
  */
 const getBlockchainForBatch = async (req, res) => {
   try {
@@ -406,9 +406,9 @@ const getBlockchainForBatch = async (req, res) => {
       });
     }
 
-    // Verify consumer owns this batch
+    // Verify consumer owns this batch and get product_id
     const [batches] = await db.execute(
-      'SELECT * FROM batches WHERE batch_code = ? AND current_owner_id = ?',
+      'SELECT b.*, p.title as product_title FROM batches b LEFT JOIN products p ON b.product_id = p.id WHERE b.batch_code = ? AND b.current_owner_id = ?',
       [batch_code, consumer_id]
     );
 
@@ -419,9 +419,16 @@ const getBlockchainForBatch = async (req, res) => {
       });
     }
 
-    console.log(`[Consumer] Fetching blockchain for batch: ${batch_code}`);
+    const batch = batches[0];
+    const product_id = batch.product_id;
+
+    console.log(`[Consumer] Fetching blockchain for batch: ${batch_code}, product: ${product_id}`);
     
-    const blockchainResult = await getTransactionsByBatchId(batch_code);
+    // Import the function here to avoid circular dependencies
+    const { getTransactionsByProductId } = require('../utils/blockchainClient');
+    
+    // Get ALL transactions for this product (complete traceability)
+    const blockchainResult = await getTransactionsByProductId(product_id);
 
     if (!blockchainResult.success) {
       return res.status(503).json({
@@ -430,6 +437,7 @@ const getBlockchainForBatch = async (req, res) => {
         error: blockchainResult.error,
         data: {
           batch_code,
+          product_id,
           transactions: [],
         },
       });
@@ -440,7 +448,9 @@ const getBlockchainForBatch = async (req, res) => {
       message: 'Blockchain data retrieved successfully',
       data: {
         batch_code,
-        batch_info: batches[0],
+        product_id,
+        product_title: batch.product_title,
+        batch_info: batch,
         transactions: blockchainResult.transactions,
         count: blockchainResult.count,
       },
@@ -457,15 +467,16 @@ const getBlockchainForBatch = async (req, res) => {
 
 /**
  * GET /api/consumer/my-blockchain
- * Get blockchain transactions for all batches owned by consumer
+ * Get blockchain transactions for all batches owned by consumer (grouped by product)
  */
 const getMyBlockchainData = async (req, res) => {
   try {
     const consumer_id = req.user.id || req.user.user_id;
+    const { getTransactionsByProductId } = require('../utils/blockchainClient');
 
-    // Get all batches owned by consumer
+    // Get all batches owned by consumer with product info
     const [batches] = await db.execute(
-      'SELECT id, batch_code, product_id FROM batches WHERE current_owner_id = ?',
+      'SELECT b.id, b.batch_code, b.product_id, p.title as product_title FROM batches b LEFT JOIN products p ON b.product_id = p.id WHERE b.current_owner_id = ?',
       [consumer_id]
     );
 
@@ -475,23 +486,34 @@ const getMyBlockchainData = async (req, res) => {
         message: 'No batches found',
         data: {
           batches: [],
+          products: [],
           transactions: {},
         },
       });
     }
 
-    const batchCodes = batches.map(b => b.batch_code);
-    console.log(`[Consumer] Fetching blockchain for ${batchCodes.length} batches`);
+    // Get unique product IDs
+    const uniqueProductIds = [...new Set(batches.map(b => b.product_id))];
+    console.log(`[Consumer] Fetching blockchain for ${uniqueProductIds.length} products`);
     
-    const blockchainResult = await getTransactionsByBatchIds(batchCodes);
+    // Fetch blockchain transactions for each product
+    const transactionsByProduct = {};
+    for (const productId of uniqueProductIds) {
+      const result = await getTransactionsByProductId(productId);
+      transactionsByProduct[productId] = {
+        transactions: result.transactions || [],
+        count: result.count || 0,
+      };
+    }
 
     res.status(200).json({
       success: true,
       message: 'Blockchain data retrieved successfully',
       data: {
         batches,
-        transactions: blockchainResult.transactions,
-        blockchain_available: blockchainResult.success,
+        products: uniqueProductIds,
+        transactions_by_product: transactionsByProduct,
+        blockchain_available: true,
       },
     });
   } catch (error) {

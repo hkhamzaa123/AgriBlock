@@ -220,6 +220,76 @@ async function getTransactionsByBatchIds(batchIds) {
 }
 
 /**
+ * Get blockchain transactions filtered by product_id
+ * Extracts product_id from batch_id format: "BATCH_CODE:PRODUCT_ID"
+ * @param {string} productId - The product ID to filter by
+ * @returns {Promise<Array>} All transactions related to the product
+ */
+async function getTransactionsByProductId(productId) {
+  try {
+    console.log('[Blockchain] Fetching transactions for product:', productId);
+    
+    const blockchainResult = await getBlockchain();
+    
+    if (!blockchainResult.success) {
+      return {
+        success: false,
+        transactions: [],
+        error: blockchainResult.error,
+      };
+    }
+
+    // Filter transactions by product_id (checking batch_id suffix or data field)
+    const transactions = [];
+    
+    blockchainResult.blocks.forEach(block => {
+      if (block.transactions && Array.isArray(block.transactions)) {
+        block.transactions.forEach(tx => {
+          // Check if batch_id contains product_id (format: BATCH_CODE:PRODUCT_ID)
+          const matchesProductId = tx.batch_id && tx.batch_id.includes(`:${productId}`);
+          
+          // Also check data field for root_product_id
+          let dataProductId = null;
+          if (tx.data) {
+            try {
+              const parsedData = typeof tx.data === 'string' ? JSON.parse(tx.data) : tx.data;
+              dataProductId = parsedData.product_id || parsedData.root_product_id;
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+          
+          if (matchesProductId || dataProductId === productId) {
+            transactions.push({
+              ...tx,
+              block_index: block.index,
+              block_hash: block.hash,
+              block_timestamp: block.timestamp,
+              previous_hash: block.previous_hash,
+            });
+          }
+        });
+      }
+    });
+
+    console.log(`[Blockchain] Found ${transactions.length} transactions for product ${productId}`);
+
+    return {
+      success: true,
+      transactions,
+      count: transactions.length,
+    };
+  } catch (error) {
+    console.error('[Blockchain] Failed to fetch product transactions:', error.message);
+    return {
+      success: false,
+      transactions: [],
+      error: error.message,
+    };
+  }
+}
+
+/**
  * Health check for blockchain API
  * @returns {Promise<boolean>} True if blockchain is reachable
  */
@@ -239,6 +309,7 @@ module.exports = {
   getBlockchain,
   getTransactionsByBatchId,
   getTransactionsByBatchIds,
+  getTransactionsByProductId,
   checkBlockchainHealth,
   generateAddress,
 };

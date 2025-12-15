@@ -29,11 +29,14 @@ const getBatchTraceability = async (req, res) => {
       });
     }
 
+    // Get ALL batches for this product (original + all splits)
+    const allBatchesForProduct = await Batch.findByProductId(batch.product_id);
+
     // Get full genealogy tree (recursive)
     const genealogyTree = await Batch.getGenealogyTree(batch.id);
 
-    // Get full event history (recursive - traverses up parent_batch_id)
-    const allEvents = await Event.getFullHistory(batch.id);
+    // Get ALL events for ALL batches of this product (complete traceability from seedling to consumer)
+    const allEvents = await Event.getFullProductHistory(batch.product_id);
 
     // Enrich events with attachments, IoT data, and owner role information
     const enrichedEvents = await Promise.all(
@@ -72,6 +75,10 @@ const getBatchTraceability = async (req, res) => {
     // Get product details
     const product = await Product.findById(batch.product_id);
 
+    // Get blockchain transactions for the product
+    const { getTransactionsByProductId } = require('../utils/blockchainClient');
+    const blockchainResult = await getTransactionsByProductId(batch.product_id);
+
     // Build the "Story" - organized timeline
     const story = {
       batch: {
@@ -108,9 +115,15 @@ const getBatchTraceability = async (req, res) => {
         iot_data: event.iot_data,
       })),
       lifecycle_stages: buildLifecycleStages(enrichedEvents),
+      blockchain: {
+        transactions: blockchainResult.transactions || [],
+        count: blockchainResult.count || 0,
+        product_id: batch.product_id,
+      },
       summary: {
         total_events: enrichedEvents.length,
-        origin: genealogyTree?.parent ? 'Split from parent batch' : 'Harvested from farm',
+        total_batches: allBatchesForProduct.length,
+        origin: 'Traced from seedling to consumer via Product ID: ' + batch.product_id,
         journey: buildJourneySummary(enrichedEvents),
       },
     };
@@ -293,9 +306,65 @@ const getBatchEvents = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/traceability/product/:product_id/blockchain
+ * Get all blockchain transactions for a product (all batches combined)
+ */
+const getProductBlockchain = async (req, res) => {
+  try {
+    const { product_id } = req.params;
+    const { getTransactionsByProductId } = require('../utils/blockchainClient');
+
+    // Verify product exists
+    const product = await Product.findById(product_id);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found',
+      });
+    }
+
+    // Get all batches for this product
+    const allBatches = await Batch.findByProductId(product_id);
+
+    // Get blockchain transactions for the product
+    const blockchainResult = await getTransactionsByProductId(product_id);
+
+    res.status(200).json({
+      success: true,
+      message: 'Product blockchain data retrieved successfully',
+      data: {
+        product: {
+          id: product.id,
+          title: product.title,
+          crop_details: product.crop_details,
+        },
+        total_batches: allBatches.length,
+        batches: allBatches.map(b => ({
+          id: b.id,
+          batch_code: b.batch_code,
+          status: b.status_name,
+        })),
+        blockchain: {
+          transactions: blockchainResult.transactions || [],
+          count: blockchainResult.count || 0,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('getProductBlockchain error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch product blockchain data',
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getBatchTraceability,
   getGenealogyTree,
   getBatchEvents,
+  getProductBlockchain,
 };
 

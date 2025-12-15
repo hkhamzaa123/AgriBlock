@@ -221,17 +221,19 @@ const createOrder = async (req, res) => {
     await connection.commit();
     connection.release();
 
-    // Submit to blockchain for each item in order
+    // Submit to blockchain for each item in order with product tracking
     for (const item of validatedItems) {
       await submitTransaction({
         sender: seller_id,
         recipient: buyer_id,
-        batch_id: item.batch.batch_code,
+        batch_id: `${item.batch.batch_code}:${item.batch.product_id}`, // Combined identifier
         event_type: 'ORDER_CREATED',
         data: {
           order_id: orderId,
           order_number: orderNumber,
           batch_id: item.batch_id,
+          product_id: item.batch.product_id, // Track by product
+          root_product_id: item.batch.product_id,
           quantity: item.quantity,
           unit_price: item.unit_price,
           item_total: item.item_total,

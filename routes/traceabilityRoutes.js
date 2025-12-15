@@ -13,6 +13,9 @@ router.get('/batch/:batch_code/genealogy', traceabilityController.getGenealogyTr
 // Events timeline only
 router.get('/batch/:batch_code/events', traceabilityController.getBatchEvents);
 
+// Product-level blockchain tracking (all batches combined)
+router.get('/product/:product_id/blockchain', traceabilityController.getProductBlockchain);
+
 module.exports = router;
 
 

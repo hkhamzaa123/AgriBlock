@@ -175,15 +175,17 @@ const buyBatch = async (req, res) => {
       [batch_id]
     );
 
-    // Submit to blockchain
+    // Submit to blockchain with product tracking
     if (updatedBatch.length > 0) {
       await submitTransaction({
         sender: batch.current_owner_id,
         recipient: buyer_id,
-        batch_id: updatedBatch[0].batch_code,
+        batch_id: `${updatedBatch[0].batch_code}:${batch.product_id}`,
         event_type: 'DISTRIBUTOR_PURCHASE',
         data: {
           batch_id,
+          product_id: batch.product_id,
+          root_product_id: batch.product_id,
           quantity,
           buyer_id,
           seller_id: batch.current_owner_id,
@@ -324,15 +326,17 @@ const splitBatch = async (req, res) => {
     await connection.commit();
     console.log("[Split Batch] SUCCESS");
     
-    // Submit to blockchain for batch split
+    // Submit to blockchain for batch split with product_id tracking
     await submitTransaction({
       sender: user_id,
       recipient: user_id,
-      batch_id: parent.batch_code,
+      batch_id: `${parent.batch_code}:${parent.product_id}`, // Combined identifier
       event_type: 'BATCH_SPLIT',
       data: {
         parent_batch_id,
         parent_batch_code: parent.batch_code,
+        product_id: parent.product_id, // Track by product
+        root_product_id: parent.product_id, // Same product for all splits
         splits_count: childBatches.length,
         total_split_quantity: totalSplitNeeded,
         remaining_quantity: newRemaining,
